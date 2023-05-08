@@ -1,0 +1,89 @@
+
+name: Push Docker image to registry
+on:
+  workflow_call:
+    inputs:
+      DOCKER_IMAGEBASE:
+        required: true
+        type: string
+      DOCKER_FILEPATH: 
+        type: string
+        required: true
+      DOCKER_CONTEXT_X:
+        required: true
+        type: string
+      OPTIONAL:
+        required: false
+        type: string
+    secrets:
+      DOCKERHUB_TOKEN:
+        required: true
+      GH_PAT:
+        required: false
+    outputs:
+      source_tag:
+        description: "Release version or branch name that will be used for another reusable workflow"
+        value: ${{ jobs.build-and-push-image.outputs.tag }}
+      image_base:
+        description: "Docker image and repo name"
+        value: ${{ inputs.DOCKER_IMAGEBASE }}
+
+jobs:
+  build-and-push-image:
+    runs-on: self-hosted
+
+    outputs:
+      tag: ${{ steps.branch_name.outputs.SOURCE_TAG }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          #submodules: false
+          #lfs: true
+          clean: true
+
+      - name: Check initial folder
+        run: |
+          echo "Checked out code"
+          ls -la
+          echo $PWD
+          echo ${GITHUB_WORKSPACE}/src
+          echo "PROJECT_DIR=${GITHUB_WORKSPACE}/src" >> $GITHUB_OUTPUT
+
+      - name: Extract Git Branch information
+        id: branch_name
+        run: |
+          MBRANCH=${GITHUB_REF#refs/*/}
+          BRANCH=${MBRANCH#feature/}
+          echo "BRANCH: $BRANCH";
+          if [["$BRANCH" == "develop"]]; then BRANCH="$(BRANCH)$(date +%s)"; fi
+          echo "SOURCE_TAG=$BRANCH" >> $GITHUB_OUTPUT
+          echo "DOCKERIMAGEANDTAG=${{ inputs.DOCKER_IMAGEBASE }}:${{ inputs.OPTIONAL }}-$BRANCH" >> $GITHUB_OUTPUT
+          echo "Started by: $GITHUB_ACTOR | SHA: $GITHUB_SHA | Tag: $BRANCH"
+
+      - name: Create buildx builder
+        run: |
+          if [ "$(docker buildx inspect | head -n1 | awk '{print $2}')" != "mybuilder" ]; then
+            docker buildx create --name mybuilder --platform linux/arm64/v8,linux/amd64 --use
+          else
+            echo "The buildx instance already exists and is the default."
+          fi
+
+      - uses: docker/login-action@v2
+        if: ${{ !env.ACT }}
+        with:
+          username: luis13byte
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        id: docker_build
+        uses: docker/build-push-action@v4
+        with:
+          push: true
+          tags: ${{ steps.branch_name.outputs.DOCKERIMAGEANDTAG }}
+          context: ${{ inputs.DOCKER_CONTEXT_X}}
+          file: ${{ inputs.DOCKER_FILEPATH }}
+          platforms: linux/amd64,linux/arm64
+          secrets: |
+            "GH_PAT=${{ secrets.GH_PAT }}"
